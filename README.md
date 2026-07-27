@@ -83,6 +83,25 @@ python3 ./onnxruntime-genai-oom-repro.py \
   --chunk-size 2048
 ```
 
+Register non-WebGPU IHV EPs before model load (default set excludes CUDA):
+
+```bash
+python3 ./onnxruntime-genai-oom-repro.py \
+  --model-path ~/.foundry/cache/models/Microsoft/qwen2.5-coder-7b-instruct-generic-gpu-4/v4 \
+  --execution-provider follow_config \
+  --register-ihv-eps
+```
+
+If you want to include CUDA explicitly:
+
+```bash
+python3 ./onnxruntime-genai-oom-repro.py \
+  --model-path ~/.foundry/cache/models/Microsoft/qwen2.5-coder-7b-instruct-generic-gpu-4/v4 \
+  --execution-provider follow_config \
+  --register-ihv-eps \
+  --ihv-eps cuda openvino qnn nvtensorrtrtx
+```
+
 For verbose ORT runtime logging, set `ORTGENAI_ORT_VERBOSE_LOGGING=1` when launching:
 
 ```bash

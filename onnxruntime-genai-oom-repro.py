@@ -29,7 +29,7 @@ IHV_EP_MODULE_CANDIDATES = {
     "qnn": ["onnxruntime_ep_qnn"],
     "nvtensorrtrtx": ["onnxruntime_ep_nvtensorrtrtx", "onnxruntime_ep_nv_tensorrt_rtx"],
 }
-DEFAULT_IHV_EPS = ["cuda", "openvino", "qnn", "nvtensorrtrtx"]
+DEFAULT_IHV_EPS = ["openvino", "qnn", "nvtensorrtrtx"]
 
 
 @dataclass
@@ -110,7 +110,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_IHV_EPS,
         help=(
             "IHV EPs to register when --register-ihv-eps is used. "
-            "Default: cuda openvino qnn nvtensorrtrtx"
+            "Default: openvino qnn nvtensorrtrtx"
         ),
     )
     parser.add_argument(
