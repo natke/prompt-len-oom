@@ -52,6 +52,26 @@ def parse_args() -> argparse.Namespace:
         default="FoundryLocalModelDownloader",
         help="Application name passed to Foundry Local SDK configuration.",
     )
+    parser.add_argument(
+        "--provider-filter",
+        nargs="*",
+        default=[],
+        help=(
+            "Optional provider filter keywords, for example trtrtx qnn cpu. "
+            "Matches provider, alias, and id text."
+        ),
+    )
+    parser.add_argument(
+        "--sort-by",
+        choices=["alias", "id", "provider", "context-length", "cached", "loaded"],
+        default="alias",
+        help="Sort key for model listing.",
+    )
+    parser.add_argument(
+        "--desc",
+        action="store_true",
+        help="Sort in descending order.",
+    )
     return parser.parse_args()
 
 
@@ -103,14 +123,70 @@ def print_ep_registration(manager: FoundryLocalManager) -> None:
             print(f"  - {name}")
 
 
-def list_models(manager: FoundryLocalManager) -> None:
+def _normalize_key(value: str) -> str:
+    return (value or "").strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _provider_text(model) -> str:
+    info_provider = getattr(model.info, "execution_provider", None)
+    if info_provider:
+        return str(info_provider)
+
+    model_id = (model.id or "").lower()
+    if "trtrtx" in model_id or "tensorrtrtx" in model_id:
+        return "TensorRT RTX"
+    if "openvino" in model_id:
+        return "OpenVINO"
+    if "webgpu" in model_id:
+        return "WebGPU"
+    if "qnn" in model_id:
+        return "QNN"
+    if "cuda" in model_id:
+        return "CUDA"
+    if "dml" in model_id:
+        return "DML"
+    if "cpu" in model_id:
+        return "CPU"
+    return "unknown"
+
+
+def list_models(manager: FoundryLocalManager, provider_filters: list[str], sort_by: str, descending: bool) -> None:
     models = manager.catalog.list_models()
+
+    normalized_filters = [_normalize_key(item) for item in provider_filters if item.strip()]
+    if normalized_filters:
+        filtered = []
+        for model in models:
+            provider_text = _provider_text(model)
+            haystack = " ".join([provider_text, model.alias or "", model.id or ""])
+            haystack_key = _normalize_key(haystack)
+            if any(token in haystack_key for token in normalized_filters):
+                filtered.append(model)
+        models = filtered
+
+    def sort_key(model):
+        if sort_by == "id":
+            return (model.id or "").lower()
+        if sort_by == "provider":
+            return _provider_text(model).lower()
+        if sort_by == "context-length":
+            value = model.info.context_length
+            return int(value) if value is not None else -1
+        if sort_by == "cached":
+            return bool(model.is_cached)
+        if sort_by == "loaded":
+            return bool(model.is_loaded)
+        return (model.alias or "").lower()
+
+    models = sorted(models, key=sort_key, reverse=descending)
+
     print(f"\nCatalog models ({len(models)}):")
     for model in models:
         context_length = model.info.context_length
         context_text = str(context_length) if context_length is not None else "n/a"
+        provider_text = _provider_text(model)
         print(
-            f"  - alias={model.alias:35} id={model.id:45} "
+            f"  - alias={model.alias:35} id={model.id:45} provider={provider_text:14} "
             f"context={context_text:>6} cached={model.is_cached} loaded={model.is_loaded}"
         )
 
@@ -165,7 +241,12 @@ def main() -> int:
         print_ep_registration(manager)
 
     if not args.no_list_models:
-        list_models(manager)
+        list_models(
+            manager,
+            provider_filters=args.provider_filter,
+            sort_by=args.sort_by,
+            descending=args.desc,
+        )
 
     failures = 0
     if args.download:
