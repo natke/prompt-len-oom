@@ -1,0 +1,4 @@
+# The Python import is `onnxruntime_genai`.
+# Use a WebGPU-enabled build of this package if you need WebGPU execution.
+onnxruntime-genai-webgpu
+psutil>=5.9

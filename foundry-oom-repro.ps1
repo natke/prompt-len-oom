@@ -48,6 +48,9 @@
     Slopes between 1x and 10x this value are flagged SUSPICIOUS; above 10x are
     reported as PROBABLE LEAK.
 
+.PARAMETER Help
+    Prints command help and exits.
+
 .EXAMPLE
     ./foundry-oom-repro.ps1
 
@@ -77,8 +80,14 @@ param(
     [int]$LeakThresholdMb = 2,
     [int]$LoadCycleTest = 0,
     [int]$MultiTurn = 0,
-    [switch]$RestartService
+    [switch]$RestartService,
+    [switch]$Help
 )
+
+if ($Help) {
+    Get-Help -Full $PSCommandPath
+    exit 0
+}
 
 # -LeakTest defaults: fixed size, many iterations, single size only
 if ($LeakTest) {
