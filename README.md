@@ -159,3 +159,21 @@ Skip EP registration if needed:
 ```bash
 python3 ./foundry-local-sdk-models-win.py --no-register-eps --download qwen2.5-coder-7b-instruct-generic-cpu:4
 ```
+
+Run a model to summarize a long file (for example `constit.txt`):
+
+```bash
+python3 ./foundry-local-sdk-models-win.py \
+  --run-model qwen2.5-coder-7b-instruct-generic-cpu:4 \
+  --prompt-file ./constit.txt \
+  --prompt-length 32000
+```
+
+Use inline text instead of a file:
+
+```bash
+python3 ./foundry-local-sdk-models-win.py \
+  --run-model qwen2.5-coder-7b-instruct-generic-cpu:4 \
+  --prompt-text "Paste your long text here" \
+  --prompt-length 8000
+```
