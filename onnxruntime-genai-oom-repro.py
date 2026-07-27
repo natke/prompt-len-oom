@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -21,15 +22,18 @@ except ImportError:
 DEFAULT_PREFILL_CHUNK_SIZE = 2048
 DEFAULT_SAMPLE_INTERVAL_MS = 20
 
-# Candidate Python module names for optional EP registration.
-# We keep WebGPU separate and only register it when explicitly requested.
-IHV_EP_MODULE_CANDIDATES = {
-    "cuda": ["onnxruntime_ep_cuda"],
-    "openvino": ["onnxruntime_ep_openvino"],
-    "qnn": ["onnxruntime_ep_qnn"],
-    "nvtensorrtrtx": ["onnxruntime_ep_nvtensorrtrtx", "onnxruntime_ep_nv_tensorrt_rtx"],
-}
+# IHV EP registration is intentionally WinML-catalog based.
+# WebGPU remains separately registered only when explicitly requested.
 DEFAULT_IHV_EPS = ["openvino", "qnn", "nvtensorrtrtx"]
+
+IHV_EP_ALIASES = {
+    "cuda": "cuda",
+    "openvino": "openvino",
+    "qnn": "qnn",
+    "nvtensorrtrtx": "nvtensorrtrtx",
+    "nvtensorrt_rtx": "nvtensorrtrtx",
+    "nv_tensorrt_rtx": "nvtensorrtrtx",
+}
 
 
 @dataclass
@@ -247,37 +251,89 @@ def register_webgpu_provider_if_requested(execution_provider: str) -> None:
     og.register_execution_provider_library(webgpu.get_ep_name(), webgpu.get_library_path())
 
 
+def normalize_ep_name(ep_name: str) -> str:
+    normalized = ep_name.strip().lower().replace("_", "").replace("-", "")
+    if normalized.endswith("executionprovider"):
+        normalized = normalized[: -len("executionprovider")]
+    return normalized
+
+
+def normalize_requested_ihv_eps(ihv_eps: list[str]) -> tuple[bool, list[str]]:
+    raw = [ep.strip().lower() for ep in ihv_eps if ep.strip()]
+    request_all = any(ep == "all" for ep in raw)
+    if request_all:
+        return True, []
+
+    normalized: list[str] = []
+    for ep in raw:
+        mapped = IHV_EP_ALIASES.get(ep)
+        if mapped is None:
+            raise RuntimeError(
+                f"Unknown IHV EP '{ep}'. Supported values: {', '.join(sorted(IHV_EP_ALIASES.keys()))}, all"
+            )
+        if mapped not in normalized:
+            normalized.append(mapped)
+    return False, normalized
+
+
+def register_ihv_providers_with_winml_catalog(request_all: bool, requested_eps: list[str], verbose: bool) -> bool:
+    try:
+        from windowsml import EpCatalog
+    except ImportError:
+        raise RuntimeError(
+            "--register-ihv-eps requires windowsml (install onnxruntime-genai-winml and onnxruntime-winml)."
+        )
+
+    requested_set = set(requested_eps)
+    discovered: dict[str, tuple[str, str]] = {}
+    registered: set[str] = set()
+
+    with EpCatalog() as catalog:
+        for provider in catalog.find_all_providers():
+            provider_name = getattr(provider, "name", "")
+            provider_library_path = getattr(provider, "library_path", "")
+            if not provider_name:
+                continue
+
+            normalized_name = normalize_ep_name(provider_name)
+            discovered[normalized_name] = (provider_name, provider_library_path)
+
+            if not request_all and normalized_name not in requested_set:
+                continue
+
+            try:
+                provider.ensure_ready()
+                if provider_library_path == "":
+                    continue
+                og.register_execution_provider_library(provider_name, provider_library_path)
+                registered.add(normalized_name)
+                if verbose:
+                    print(f"Registered IHV EP '{provider_name}' from WinML catalog")
+            except Exception as exc:
+                print(f"Failed to register execution provider {provider_name}: {exc}", file=sys.stderr)
+                if verbose:
+                    traceback.print_exc()
+
+    if request_all:
+        return True
+
+    missing = sorted(set(requested_eps) - registered)
+    if missing:
+        available = sorted(discovered.keys())
+        raise RuntimeError(
+            f"Failed to register requested IHV EP(s): {', '.join(missing)}. "
+            f"WinML catalog available EPs: {', '.join(available) if available else 'none'}"
+        )
+
+    return True
+
+
 def register_ihv_providers_if_requested(register_ihv_eps: bool, ihv_eps: list[str], verbose: bool) -> None:
     if not register_ihv_eps:
         return
 
-    requested = [ep.lower() for ep in ihv_eps]
-    if any(ep == "all" for ep in requested):
-        requested = list(DEFAULT_IHV_EPS)
-
-    for ep in requested:
-        if ep not in IHV_EP_MODULE_CANDIDATES:
-            raise RuntimeError(
-                f"Unknown IHV EP '{ep}'. Supported values: {', '.join(sorted(IHV_EP_MODULE_CANDIDATES.keys()))}, all"
-            )
-
-        last_error: Optional[Exception] = None
-        registered = False
-        for module_name in IHV_EP_MODULE_CANDIDATES[ep]:
-            try:
-                ep_module = importlib.import_module(module_name)
-                og.register_execution_provider_library(ep_module.get_ep_name(), ep_module.get_library_path())
-                if verbose:
-                    print(f"Registered IHV EP '{ep}' from module '{module_name}'")
-                registered = True
-                break
-            except Exception as exc:
-                last_error = exc
-
-        if not registered:
-            raise RuntimeError(
-                f"Failed to register IHV EP '{ep}'. Tried modules: {', '.join(IHV_EP_MODULE_CANDIDATES[ep])}"
-            ) from last_error
+    request_all, requested = normalize_requested_ihv_eps(ihv_eps)
+    register_ihv_providers_with_winml_catalog(request_all, requested, verbose)
 
 
 def estimate_prompt_text(target_tokens: int, base_prompt: str, prompt_length: int) -> str:

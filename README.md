@@ -85,6 +85,8 @@ python3 ./onnxruntime-genai-oom-repro.py \
 
 Register non-WebGPU IHV EPs before model load (default set excludes CUDA):
 
+Note: IHV registration is WinML-catalog only (discover providers, `ensure_ready()`, then register by provider name and library path). Install `onnxruntime-genai-winml` and `onnxruntime-winml` for `--register-ihv-eps`.
+
 ```bash
 python3 ./onnxruntime-genai-oom-repro.py \
   --model-path ~/.foundry/cache/models/Microsoft/qwen2.5-coder-7b-instruct-generic-gpu-4/v4 \
