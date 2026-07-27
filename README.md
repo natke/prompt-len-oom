@@ -44,6 +44,12 @@ Install Python dependencies:
 python3 -m pip install -r requirements.txt
 ```
 
+If you plan to run with WebGPU, install the WebGPU EP package explicitly:
+
+```bash
+python3 -m pip install onnxruntime-ep-webgpu
+```
+
 Run ORT GenAI repro (example):
 
 ```bash
@@ -53,4 +59,23 @@ python3 ./onnxruntime-genai-oom-repro.py \
   --sizes 1024 2048 4096 8192 \
   --max-tokens 1 \
   --chunk-size 2048
+```
+
+Run ORT GenAI repro with explicit WebGPU EP:
+
+```bash
+python3 ./onnxruntime-genai-oom-repro.py \
+  --model-path ~/.foundry/cache/models/Microsoft/qwen2.5-coder-7b-instruct-generic-gpu-4/v4 \
+  --execution-provider webgpu \
+  --sizes 1024 2048 4096 8192 \
+  --max-tokens 1 \
+  --chunk-size 2048
+```
+
+For verbose ORT runtime logging, set `ORTGENAI_ORT_VERBOSE_LOGGING=1` when launching:
+
+```bash
+ORTGENAI_ORT_VERBOSE_LOGGING=1 python3 ./onnxruntime-genai-oom-repro.py \
+  --model-path ~/.foundry/cache/models/Microsoft/qwen2.5-coder-7b-instruct-generic-gpu-4/v4 \
+  --execution-provider webgpu
 ```

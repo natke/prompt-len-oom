@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import importlib
 import os
 import subprocess
 import sys
@@ -9,7 +10,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
 import onnxruntime_genai as og
 
 try:
@@ -209,6 +209,20 @@ def make_config(model_path: str, execution_provider: str, chunk_size: int) -> og
     return config
 
 
+def register_webgpu_provider_if_requested(execution_provider: str) -> None:
+    if execution_provider.lower() != "webgpu":
+        return
+
+    try:
+        webgpu = importlib.import_module("onnxruntime_ep_webgpu")
+    except ImportError as exc:
+        raise RuntimeError(
+            "Execution provider 'webgpu' requested but onnxruntime_ep_webgpu is not installed."
+        ) from exc
+
+    og.register_execution_provider_library("webgpu", webgpu.get_library_path())
+
+
 def estimate_prompt_text(target_tokens: int, base_prompt: str, prompt_length: int) -> str:
     if prompt_length > 0:
         reserved = max(0, target_tokens - prompt_length)
@@ -320,6 +334,12 @@ def main() -> int:
         return 1
     if args.chunk_size < 0:
         print("ERROR: --chunk-size must be >= 0", file=sys.stderr)
+        return 1
+
+    try:
+        register_webgpu_provider_if_requested(args.execution_provider)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     if args.verbose:
