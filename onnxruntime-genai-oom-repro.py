@@ -21,6 +21,16 @@ except ImportError:
 DEFAULT_PREFILL_CHUNK_SIZE = 2048
 DEFAULT_SAMPLE_INTERVAL_MS = 20
 
+# Candidate Python module names for optional EP registration.
+# We keep WebGPU separate and only register it when explicitly requested.
+IHV_EP_MODULE_CANDIDATES = {
+    "cuda": ["onnxruntime_ep_cuda"],
+    "openvino": ["onnxruntime_ep_openvino"],
+    "qnn": ["onnxruntime_ep_qnn"],
+    "nvtensorrtrtx": ["onnxruntime_ep_nvtensorrtrtx", "onnxruntime_ep_nv_tensorrt_rtx"],
+}
+DEFAULT_IHV_EPS = ["cuda", "openvino", "qnn", "nvtensorrtrtx"]
+
 
 @dataclass
 class RunResult:
@@ -88,6 +98,20 @@ def parse_args() -> argparse.Namespace:
         "--execution-provider",
         default="cpu",
         help="Execution provider to use when overriding the config, for example cpu, cuda, dml, qnn, webgpu.",
+    )
+    parser.add_argument(
+        "--register-ihv-eps",
+        action="store_true",
+        help="Register IHV EP libraries (non-WebGPU) before model load.",
+    )
+    parser.add_argument(
+        "--ihv-eps",
+        nargs="*",
+        default=DEFAULT_IHV_EPS,
+        help=(
+            "IHV EPs to register when --register-ihv-eps is used. "
+            "Default: cuda openvino qnn nvtensorrtrtx"
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -223,6 +247,39 @@ def register_webgpu_provider_if_requested(execution_provider: str) -> None:
     og.register_execution_provider_library(webgpu.get_ep_name(), webgpu.get_library_path())
 
 
+def register_ihv_providers_if_requested(register_ihv_eps: bool, ihv_eps: list[str], verbose: bool) -> None:
+    if not register_ihv_eps:
+        return
+
+    requested = [ep.lower() for ep in ihv_eps]
+    if any(ep == "all" for ep in requested):
+        requested = list(DEFAULT_IHV_EPS)
+
+    for ep in requested:
+        if ep not in IHV_EP_MODULE_CANDIDATES:
+            raise RuntimeError(
+                f"Unknown IHV EP '{ep}'. Supported values: {', '.join(sorted(IHV_EP_MODULE_CANDIDATES.keys()))}, all"
+            )
+
+        last_error: Optional[Exception] = None
+        registered = False
+        for module_name in IHV_EP_MODULE_CANDIDATES[ep]:
+            try:
+                ep_module = importlib.import_module(module_name)
+                og.register_execution_provider_library(ep_module.get_ep_name(), ep_module.get_library_path())
+                if verbose:
+                    print(f"Registered IHV EP '{ep}' from module '{module_name}'")
+                registered = True
+                break
+            except Exception as exc:
+                last_error = exc
+
+        if not registered:
+            raise RuntimeError(
+                f"Failed to register IHV EP '{ep}'. Tried modules: {', '.join(IHV_EP_MODULE_CANDIDATES[ep])}"
+            ) from last_error
+
+
 def estimate_prompt_text(target_tokens: int, base_prompt: str, prompt_length: int) -> str:
     if prompt_length > 0:
         reserved = max(0, target_tokens - prompt_length)
@@ -337,6 +394,7 @@ def main() -> int:
         return 1
 
     try:
+        register_ihv_providers_if_requested(args.register_ihv_eps, args.ihv_eps, args.verbose)
         register_webgpu_provider_if_requested(args.execution_provider)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
