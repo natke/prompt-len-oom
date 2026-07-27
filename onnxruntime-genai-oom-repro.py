@@ -220,7 +220,7 @@ def register_webgpu_provider_if_requested(execution_provider: str) -> None:
             "Execution provider 'webgpu' requested but onnxruntime_ep_webgpu is not installed."
         ) from exc
 
-    og.register_execution_provider_library("webgpu", webgpu.get_library_path())
+    og.register_execution_provider_library(webgpu.get_ep_name(), webgpu.get_library_path())
 
 
 def estimate_prompt_text(target_tokens: int, base_prompt: str, prompt_length: int) -> str:
