@@ -107,9 +107,10 @@ def list_models(manager: FoundryLocalManager) -> None:
     models = manager.catalog.list_models()
     print(f"\nCatalog models ({len(models)}):")
     for model in models:
+        context_length = model.info.context_length
         print(
             f"  - alias={model.alias:35} id={model.id:45} "
-            f"cached={model.is_cached} loaded={model.is_loaded}"
+            f"context={context_length:>6} cached={model.is_cached} loaded={model.is_loaded}"
         )
 
 
