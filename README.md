@@ -85,7 +85,29 @@ python3 ./onnxruntime-genai-oom-repro.py \
 
 Register non-WebGPU IHV EPs before model load (default set excludes CUDA):
 
-Note: IHV registration is WinML-catalog only (discover providers, `ensure_ready()`, then register by provider name and library path). Install `onnxruntime-genai-winml` and `onnxruntime-winml` for `--register-ihv-eps`.
+Note: IHV registration is WinML-catalog only (discover providers, `ensure_ready()`, then register by provider name and library path).
+
+Use the package set that matches your target provider:
+
+- Non-TRT RTX paths (for example CPU, OpenVINO, QNN):
+
+```bash
+python3 -m pip install onnxruntime-genai windowsml
+```
+
+- TRT RTX path:
+
+```bash
+python3 -m pip install onnxruntime-genai-cuda windowsml
+```
+
+You can also use the optional requirements files below.
+
+```bash
+python3 -m pip install -r requirements-genai.txt
+# For TRT RTX instead:
+python3 -m pip install -r requirements-genai-trtrtx.txt
+```
 
 ```bash
 python3 ./onnxruntime-genai-oom-repro.py \

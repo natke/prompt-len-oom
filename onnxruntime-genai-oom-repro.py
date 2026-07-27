@@ -11,7 +11,17 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import onnxruntime_genai as og
+try:
+    import onnxruntime_genai as og
+except ImportError as exc:
+    message = str(exc)
+    if "Could not find the onnxruntime package" in message:
+        raise ImportError(
+            "onnxruntime_genai requires onnxruntime to be installed in this environment. "
+            "On Windows WinML flows, install matching packages, for example: "
+            "python -m pip install onnxruntime onnxruntime-genai-winml onnxruntime-winml"
+        ) from exc
+    raise
 
 try:
     import psutil
