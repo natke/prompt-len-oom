@@ -64,6 +64,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-path",
+        "--model",
+        dest="model_path",
         required=True,
         help="Path to the ORT GenAI model directory containing genai_config.json.",
     )
@@ -268,6 +270,14 @@ def normalize_ep_name(ep_name: str) -> str:
     return normalized
 
 
+def is_device_not_ready_error(exc: Exception) -> bool:
+    # Windows may surface HRESULT 0x80070015 as either winerror or message text.
+    winerror = getattr(exc, "winerror", None)
+    if winerror == -2147024875:
+        return True
+    return "device is not ready" in str(exc).lower()
+
+
 def normalize_requested_ihv_eps(ihv_eps: list[str]) -> tuple[bool, list[str]]:
     raw = [ep.strip().lower() for ep in ihv_eps if ep.strip()]
     request_all = any(ep == "all" for ep in raw)
@@ -291,7 +301,8 @@ def register_ihv_providers_with_winml_catalog(request_all: bool, requested_eps: 
         from windowsml import EpCatalog
     except ImportError:
         raise RuntimeError(
-            "--register-ihv-eps requires windowsml (install onnxruntime-genai-winml and onnxruntime-winml)."
+            "--register-ihv-eps requires windowsml. Install a matching GenAI package plus windowsml, "
+            "for example: onnxruntime-genai windowsml, or for TRT RTX: onnxruntime-genai-cuda windowsml."
         )
 
     requested_set = set(requested_eps)
@@ -300,25 +311,43 @@ def register_ihv_providers_with_winml_catalog(request_all: bool, requested_eps: 
 
     with EpCatalog() as catalog:
         for provider in catalog.find_all_providers():
-            provider_name = getattr(provider, "name", "")
-            provider_library_path = getattr(provider, "library_path", "")
+            try:
+                provider_name = getattr(provider, "name", "")
+            except Exception as exc:
+                if verbose:
+                    print(f"Skipping WinML provider with unreadable name: {exc}", file=sys.stderr)
+                continue
             if not provider_name:
                 continue
 
             normalized_name = normalize_ep_name(provider_name)
-            discovered[normalized_name] = (provider_name, provider_library_path)
+            discovered[normalized_name] = (provider_name, "")
 
             if not request_all and normalized_name not in requested_set:
                 continue
 
             try:
                 provider.ensure_ready()
+                provider_library_path = getattr(provider, "library_path", "")
+                discovered[normalized_name] = (provider_name, provider_library_path)
                 if provider_library_path == "":
                     continue
                 og.register_execution_provider_library(provider_name, provider_library_path)
                 registered.add(normalized_name)
                 if verbose:
                     print(f"Registered IHV EP '{provider_name}' from WinML catalog")
+            except PermissionError as exc:
+                if is_device_not_ready_error(exc):
+                    print(
+                        f"Skipping execution provider {provider_name}: device is not ready.",
+                        file=sys.stderr,
+                    )
+                    if verbose:
+                        traceback.print_exc()
+                    continue
+                print(f"Failed to register execution provider {provider_name}: {exc}", file=sys.stderr)
+                if verbose:
+                    traceback.print_exc()
             except Exception as exc:
                 print(f"Failed to register execution provider {provider_name}: {exc}", file=sys.stderr)
                 if verbose:
