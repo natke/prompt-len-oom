@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Iterable, Optional
+from typing import Iterable
 
 from foundry_local_sdk import Configuration, FoundryLocalManager
 from foundry_local_sdk.exception import FoundryLocalException
@@ -57,11 +57,27 @@ def parse_args() -> argparse.Namespace:
 
 def print_ep_registration(manager: FoundryLocalManager) -> None:
     eps = manager.discover_eps()
-    target_names = [ep.name for ep in eps if ep.name.lower() != "webgpu"]
+
+    def is_webgpu_ep(name: str) -> bool:
+        normalized = (name or "").strip().lower()
+        return "webgpu" in normalized
+
+    # De-duplicate names while preserving order; skip blanks and all WebGPU variants.
+    target_names: list[str] = []
+    seen: set[str] = set()
+    for ep in eps:
+        raw_name = (ep.name or "").strip()
+        if not raw_name or is_webgpu_ep(raw_name):
+            continue
+        key = raw_name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        target_names.append(raw_name)
 
     print("Discovered EPs:")
     for ep in eps:
-        marker = "(skip)" if ep.name.lower() == "webgpu" else ""
+        marker = "(skip)" if is_webgpu_ep(ep.name) else ""
         print(f"  - {ep.name:20} registered={ep.is_registered} {marker}")
 
     if not target_names:
