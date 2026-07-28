@@ -56,6 +56,10 @@ class RunResult:
     rss_before_mb: Optional[int] = None
     rss_after_mb: Optional[int] = None
     rss_peak_mb: Optional[int] = None
+    sys_before_mb: Optional[int] = None
+    sys_after_mb: Optional[int] = None
+    gpu_before_mb: Optional[int] = None
+    gpu_after_mb: Optional[int] = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,6 +146,107 @@ def get_process_rss_mb() -> Optional[int]:
         return None
     process = psutil.Process()
     return int(process.memory_info().rss / (1024 * 1024))
+
+
+def get_system_used_mb() -> Optional[int]:
+    if psutil is None:
+        return None
+    try:
+        vm = psutil.virtual_memory()
+        return int(vm.used / (1024 * 1024))
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# GPU memory helpers (NVIDIA + Intel)
+# ---------------------------------------------------------------------------
+
+_GPU_MODE: Optional[str] = None  # "nvidia", "intel", or None
+
+
+def _detect_gpu_mode(execution_provider: str) -> str:
+    ep = execution_provider.lower()
+    if "openvino" in ep:
+        return "intel"
+    if ep in ("cuda", "dml", "tensorrt", "nvtensorrtrtx") or "trtrtx" in ep:
+        return "nvidia"
+    # Fall back to nvidia if nvidia-smi is available, else intel
+    try:
+        subprocess.check_output(
+            ["nvidia-smi"], timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return "nvidia"
+    except Exception:
+        return "intel"
+
+
+def _get_nvidia_gpu_used_mb() -> Optional[int]:
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.used",
+             "--format=csv,noheader,nounits", "--id=0"],
+            text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).strip()
+        return int(out.strip())
+    except Exception:
+        return None
+
+
+def _get_intel_gpu_used_mb() -> Optional[int]:
+    try:
+        ps_cmd = (
+            "$shared = (Get-Counter '\\GPU Adapter Memory(*)\\Shared Usage').CounterSamples; "
+            "$dedicated = (Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage').CounterSamples; "
+            "foreach ($s in $shared) { "
+            "  $d = $dedicated | Where-Object { $_.InstanceName -eq $s.InstanceName }; "
+            "  $dv = if ($d) { $d.CookedValue } else { 0 }; "
+            "  Write-Output ('{0},{1}' -f [int64]$s.CookedValue, [int64]$dv) "
+            "}"
+        )
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).strip()
+        if not out:
+            return None
+        best_shared = 0
+        for line in out.splitlines():
+            parts = line.strip().split(",")
+            if len(parts) < 2:
+                continue
+            shared_bytes = int(parts[0])
+            dedicated_bytes = int(parts[1])
+            if dedicated_bytes < 100 * 1024 * 1024 and shared_bytes > best_shared:
+                best_shared = shared_bytes
+        return int(best_shared / (1024 * 1024)) if best_shared > 0 else None
+    except Exception:
+        return None
+
+
+def set_gpu_mode(execution_provider: str) -> None:
+    global _GPU_MODE
+    _GPU_MODE = _detect_gpu_mode(execution_provider)
+
+
+def get_gpu_used_mb() -> Optional[int]:
+    if _GPU_MODE == "intel":
+        return _get_intel_gpu_used_mb()
+    elif _GPU_MODE == "nvidia":
+        return _get_nvidia_gpu_used_mb()
+    result = _get_nvidia_gpu_used_mb()
+    return result if result is not None else _get_intel_gpu_used_mb()
+
+
+def get_gpu_label() -> str:
+    if _GPU_MODE == "intel":
+        return "iGPU"
+    elif _GPU_MODE == "nvidia":
+        return "dGPU"
+    return "GPU"
 
 
 class PeakMemorySampler:
@@ -412,6 +517,8 @@ def run_once(
     max_tokens: int,
 ) -> RunResult:
     rss_before = get_process_rss_mb()
+    sys_before = get_system_used_mb()
+    gpu_before = get_gpu_used_mb()
     sampler = PeakMemorySampler(os.getpid())
     start = time.perf_counter()
     try:
@@ -439,6 +546,8 @@ def run_once(
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         rss_after = get_process_rss_mb()
         rss_peak = sampler.stop()
+        sys_after = get_system_used_mb()
+        gpu_after = get_gpu_used_mb()
         return RunResult(
             ok=True,
             elapsed_ms=elapsed_ms,
@@ -448,11 +557,17 @@ def run_once(
             rss_before_mb=rss_before,
             rss_after_mb=rss_after,
             rss_peak_mb=rss_peak,
+            sys_before_mb=sys_before,
+            sys_after_mb=sys_after,
+            gpu_before_mb=gpu_before,
+            gpu_after_mb=gpu_after,
         )
     except Exception as exc:
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         rss_after = get_process_rss_mb()
         rss_peak = sampler.stop()
+        sys_after = get_system_used_mb()
+        gpu_after = get_gpu_used_mb()
         return RunResult(
             ok=False,
             elapsed_ms=elapsed_ms,
@@ -462,6 +577,10 @@ def run_once(
             rss_before_mb=rss_before,
             rss_after_mb=rss_after,
             rss_peak_mb=rss_peak,
+            sys_before_mb=sys_before,
+            sys_after_mb=sys_after,
+            gpu_before_mb=gpu_before,
+            gpu_after_mb=gpu_after,
         )
 
 
@@ -476,6 +595,14 @@ def format_rss(before_mb: Optional[int], after_mb: Optional[int], peak_mb: Optio
         peak_sign = "+" if peak_delta_mb >= 0 else ""
         parts.append(f"peak={peak_mb} MB ({peak_sign}{peak_delta_mb})")
     return ", ".join(parts)
+
+
+def _fmt_delta(before: Optional[int], after: Optional[int]) -> str:
+    if before is None or after is None:
+        return "n/a"
+    d = after - before
+    sign = "+" if d >= 0 else ""
+    return f"{after} ({sign}{d})"
 
 
 def main() -> int:
@@ -502,6 +629,9 @@ def main() -> int:
         if psutil is None:
             print("Memory probe: disabled (install psutil to capture Python RSS)")
 
+    set_gpu_mode(args.execution_provider)
+    gpu_label = get_gpu_label()
+
     config = make_config(str(model_path), args.execution_provider, args.chunk_size)
     model = og.Model(config)
     tokenizer = og.Tokenizer(model)
@@ -509,12 +639,18 @@ def main() -> int:
     print(f"Model path: {model_path}")
     print(f"Execution provider: {args.execution_provider}")
     print(f"Prefill chunk_size: {args.chunk_size}")
+    print(f"GPU mode: {gpu_label} ({_GPU_MODE})")
     if psutil is None:
         print("Memory probe: unavailable (install psutil for Python-process RSS only)")
     else:
         print(f"Memory probe: Python RSS before/after plus peak sampled every {DEFAULT_SAMPLE_INTERVAL_MS} ms")
 
-    header = f"{'size':>8}  {'iter':>4}  {'prompt':>8}  {'gen':>5}  {'ms':>7}  result"
+    gpu_col = f"{gpu_label}(MB)[d]"
+    header = (
+        f"{'size':>8}  {'iter':>4}  {'prompt':>8}  {'gen':>5}  "
+        f"{'Proc(MB)[d]':>14}  {'Sys(MB)[d]':>14}  {gpu_col:>14}  "
+        f"{'ms':>7}  result"
+    )
     print(header)
     print("-" * len(header))
 
@@ -540,8 +676,12 @@ def main() -> int:
 
             status = "OK" if result.ok else "FAIL"
             rss_text = format_rss(result.rss_before_mb, result.rss_after_mb, result.rss_peak_mb)
+            proc_col = _fmt_delta(result.rss_before_mb, result.rss_after_mb)
+            sys_col = _fmt_delta(result.sys_before_mb, result.sys_after_mb)
+            gpu_col_val = _fmt_delta(result.gpu_before_mb, result.gpu_after_mb)
             print(
                 f"{size:8d}  {iteration:4d}  {result.prompt_tokens:8d}  {result.generated_tokens:5d}  "
+                f"{proc_col:>14}  {sys_col:>14}  {gpu_col_val:>14}  "
                 f"{result.elapsed_ms:7d}  {status} {rss_text} {result.detail}"
             )
 

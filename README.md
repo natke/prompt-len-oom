@@ -8,8 +8,15 @@ This folder contains two scripts for prompt-length and memory behavior experimen
   - Uses Foundry Local (`foundry`) and calls the local inference endpoint.
   - Supports service/model orchestration and memory/leak workflows.
 
+- `foundry-sdk-oom-repro.py`
+  - Uses the Foundry Local Python SDK (in-process inference, no separate daemon).
+  - Tracks process RSS, system RAM, and GPU memory (NVIDIA dGPU / Intel iGPU).
+  - Supports size sweep, multi-turn conversation, load/unload cycle test, and
+    linear-regression leak analysis.
+
 - `onnxruntime-genai-oom-repro.py`
   - Uses `onnxruntime_genai` directly (no Foundry service dependency).
+  - Tracks process RSS, system RAM, and GPU memory (NVIDIA dGPU / Intel iGPU).
   - Supports configurable prefill chunk size and sampled RSS/peak reporting.
 
 - `foundry-local-sdk-models-win.py`
@@ -28,6 +35,7 @@ pwsh ./foundry-oom-repro.ps1 -Help
 Python script help:
 
 ```bash
+python3 ./foundry-sdk-oom-repro.py --help
 python3 ./onnxruntime-genai-oom-repro.py --help
 ```
 
@@ -45,6 +53,50 @@ Run Foundry Local repro (example):
 
 ```powershell
 pwsh ./foundry-oom-repro.ps1 -Sizes 1024,2048,4096,8192 -MaxTokens 16
+```
+
+## Quick Start (Python / Foundry Local SDK)
+
+Install Python dependencies:
+
+```bash
+python3 -m pip install foundry-local-sdk-winml psutil colorama
+```
+
+Run the SDK repro (auto-detects a model):
+
+```bash
+python3 ./foundry-sdk-oom-repro.py --sizes 1024 2048 4096 8192 --max-tokens 16
+```
+
+Run with a specific model:
+
+```bash
+python3 ./foundry-sdk-oom-repro.py --model qwen2.5-7b-instruct-trtrtx-gpu:2 --sizes 1024 2048 4096 8192
+```
+
+Run load/unload cycle test (10 cycles):
+
+```bash
+python3 ./foundry-sdk-oom-repro.py --model qwen2.5-7b-instruct-trtrtx-gpu:2 --load-cycle-test 10
+```
+
+Run leak detection (pins to one size, >= 20 iterations):
+
+```bash
+python3 ./foundry-sdk-oom-repro.py --model qwen2.5-7b-instruct-trtrtx-gpu:2 --sizes 4096 --leak-test
+```
+
+Run multi-turn conversation test:
+
+```bash
+python3 ./foundry-sdk-oom-repro.py --model qwen2.5-7b-instruct-trtrtx-gpu:2 --multi-turn 10
+```
+
+Include WebGPU EP registration (skipped by default):
+
+```bash
+python3 ./foundry-sdk-oom-repro.py --include-webgpu --sizes 1024 2048 4096
 ```
 
 ## Quick Start (Python / ORT GenAI)
@@ -108,6 +160,21 @@ python3 -m pip install -r requirements-genai.txt
 # For TRT RTX instead:
 python3 -m pip install -r requirements-genai-trtrtx.txt
 ```
+
+Run with TensorRT RTX EP (register only the nvtensorrtrtx IHV EP):
+
+```bash
+python3 ./onnxruntime-genai-oom-repro.py \
+  --model-path C:\Users\nakersha\.FoundryLocalModelDownloader\cache\models\Microsoft\qwen2.5-7b-instruct-trtrtx-gpu-2\v2 \
+  --execution-provider follow_config \
+  --sizes 1024 2048 4096 8192 \
+  --max-tokens 1 \
+  --chunk-size 2048 \
+  --register-ihv-eps \
+  --ihv-ep nvtensorrtrtx
+```
+
+Run with all default IHV EPs registered:
 
 ```bash
 python3 ./onnxruntime-genai-oom-repro.py \
@@ -177,3 +244,46 @@ python3 ./foundry-local-sdk-models-win.py \
   --prompt-text "Paste your long text here" \
   --prompt-tokens 8000
 ```
+
+## Attention Scratch Memory Formula
+
+The dominant OOM driver at large input sizes is the materialized QK^T attention
+scores matrix. This is an O(N²) allocation computed per layer (only one layer's
+scores are live at a time):
+
+```
+Attention scratch (bytes) = num_attention_heads × N² × 4
+```
+
+Where:
+
+- **num_attention_heads** — full attention head count (GQA does not reduce this;
+  it reduces KV heads but the query projection still fans out to all heads)
+- **N** — sequence length (input tokens)
+- **4** — bytes per element (fp32, required for softmax numerical stability)
+
+### Example: Qwen 2.5-7B (28 heads) at 8192 tokens
+
+```
+28 × 8192² × 4 = 7,516,192,768 bytes ≈ 7,168 MB
+```
+
+This matches the observed ~7.3 GB process memory jump at 8192 input tokens when
+running with the NvTensorRTRTX EP (full-sequence prefill, no chunking).
+
+### Comparison with KV Cache
+
+The KV cache grows linearly and is GQA-aware:
+
+```
+KV cache (bytes) = N × num_kv_heads × head_dim × num_layers × 2 × dtype_bytes
+```
+
+For Qwen 2.5-7B (4 KV heads, head_dim=128, 28 layers, fp16) at 8192 tokens:
+
+```
+8192 × 4 × 128 × 28 × 2 × 2 = 471,859,200 bytes ≈ 450 MB
+```
+
+At large N, attention scratch dominates because it scales as N² while KV cache
+scales as N.
