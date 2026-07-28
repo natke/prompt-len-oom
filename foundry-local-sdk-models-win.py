@@ -108,6 +108,21 @@ def parse_args() -> argparse.Namespace:
         default="Summarize the following text:",
         help="Instruction prefix used before the source text.",
     )
+    parser.add_argument(
+        "--reserve-output-tokens",
+        type=int,
+        default=512,
+        help="Tokens to reserve for generation when fitting prompt to model context length.",
+    )
+    parser.add_argument(
+        "--token-safety-ratio",
+        type=float,
+        default=0.75,
+        help=(
+            "Safety multiplier applied when fitting source tokens into model context. "
+            "Use lower values when tokenizer expansion is high."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -258,11 +273,43 @@ def _resize_text(text: str, target_length: int) -> str:
     return " ".join(expanded[:target_length])
 
 
+def _resize_mode(original_tokens: int, target_tokens: int, resized_tokens: int) -> str:
+    if target_tokens <= 0:
+        return "unchanged"
+    if resized_tokens < original_tokens:
+        return "truncated"
+    if resized_tokens > original_tokens:
+        return "duplicated"
+    return "unchanged"
+
+
 def _load_source_text(prompt_file: str, prompt_text: str) -> str:
     if prompt_file:
         content = Path(prompt_file).read_text(encoding="utf-8")
         return content.strip()
     return prompt_text.strip()
+
+
+def _clamp_source_text_to_context(
+    source_text: str,
+    summary_instruction: str,
+    context_length: int | None,
+    reserve_output_tokens: int,
+    token_safety_ratio: float,
+) -> tuple[str, int | None]:
+    if context_length is None or context_length <= 0:
+        return source_text, None
+
+    instruction_tokens = len(_tokenize_text(summary_instruction.strip()))
+    usable_tokens = max(1, context_length - max(0, reserve_output_tokens) - instruction_tokens)
+    safe_budget = max(1, int(usable_tokens * max(0.1, min(1.0, token_safety_ratio))))
+
+    source_tokens = _tokenize_text(source_text)
+    if len(source_tokens) <= safe_budget:
+        return source_text, safe_budget
+
+    clamped = " ".join(source_tokens[:safe_budget])
+    return clamped, safe_budget
 
 
 def run_model_summarization(
@@ -272,6 +319,8 @@ def run_model_summarization(
     prompt_text: str,
     prompt_length: int,
     summary_instruction: str,
+    reserve_output_tokens: int,
+    token_safety_ratio: float,
 ) -> int:
     model = resolve_model(manager, identifier)
     if model is None:
@@ -291,12 +340,39 @@ def run_model_summarization(
         )
         return 1
 
+    original_source_token_count = len(_tokenize_text(source_text))
     source_text = _resize_text(source_text, prompt_length)
+    resized_source_token_count = len(_tokenize_text(source_text))
+    resize_mode = _resize_mode(original_source_token_count, prompt_length, resized_source_token_count)
+
+    context_length = model.info.context_length
+    pre_clamp_source_token_count = resized_source_token_count
+    source_text, safe_budget = _clamp_source_text_to_context(
+        source_text=source_text,
+        summary_instruction=summary_instruction,
+        context_length=context_length,
+        reserve_output_tokens=reserve_output_tokens,
+        token_safety_ratio=token_safety_ratio,
+    )
     prompt = f"{summary_instruction.strip()}\n\n{source_text}"
     source_token_count = len(_tokenize_text(source_text))
     prompt_token_count = len(_tokenize_text(prompt))
+    context_clamped = source_token_count < pre_clamp_source_token_count
 
     print(f"\nRunning model: id='{model.id}' alias='{model.alias}'")
+    print(f"Original source length (tokens): {original_source_token_count}")
+    print(
+        "Prompt-length transform: "
+        f"mode={resize_mode} target={prompt_length if prompt_length > 0 else 'none'} result={resized_source_token_count}"
+    )
+    if context_length is not None:
+        print(f"Model context length (tokens): {context_length}")
+    if safe_budget is not None:
+        print(
+            "Fitted source token budget: "
+            f"{safe_budget} (reserve_output={reserve_output_tokens}, safety_ratio={token_safety_ratio})"
+        )
+    print(f"Context clamp applied: {'yes' if context_clamped else 'no'}")
     print(f"Prompt source length (tokens): {source_token_count}")
     print(f"Prompt total length (tokens): {prompt_token_count}")
 
@@ -388,6 +464,8 @@ def main() -> int:
             prompt_text=args.prompt_text,
             prompt_length=args.prompt_length,
             summary_instruction=args.summary_instruction,
+            reserve_output_tokens=args.reserve_output_tokens,
+            token_safety_ratio=args.token_safety_ratio,
         )
 
     return 1 if failures else 0
