@@ -166,7 +166,7 @@ Run a model to summarize a long file (for example `constit.txt`):
 python3 ./foundry-local-sdk-models-win.py \
   --run-model qwen2.5-coder-7b-instruct-generic-cpu:4 \
   --prompt-file ./constit.txt \
-  --prompt-length 32000
+  --prompt-tokens 32000
 ```
 
 Use inline text instead of a file:
@@ -175,5 +175,5 @@ Use inline text instead of a file:
 python3 ./foundry-local-sdk-models-win.py \
   --run-model qwen2.5-coder-7b-instruct-generic-cpu:4 \
   --prompt-text "Paste your long text here" \
-  --prompt-length 8000
+  --prompt-tokens 8000
 ```

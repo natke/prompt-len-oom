@@ -92,11 +92,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional inline text to summarize (used when --prompt-file is not provided).",
     )
     parser.add_argument(
+        "--prompt-tokens",
         "--prompt-length",
+        dest="prompt_length",
         type=int,
         default=0,
         help=(
-            "Optional character length target for the source text before sending to the model. "
+            "Optional token target for source text before sending to the model (whitespace tokenization). "
             "0 keeps original length, larger values repeat text until target is met, "
             "smaller values truncate."
         ),
@@ -233,20 +235,27 @@ def resolve_model(manager: FoundryLocalManager, identifier: str):
     return model
 
 
+def _tokenize_text(text: str) -> list[str]:
+    return text.split()
+
+
 def _resize_text(text: str, target_length: int) -> str:
     if target_length <= 0:
         return text
     if not text:
         return text
-    if len(text) >= target_length:
-        return text[:target_length]
 
-    chunks: list[str] = [text]
-    current = len(text)
-    while current < target_length:
-        chunks.append("\n" + text)
-        current += len(text) + 1
-    return "".join(chunks)[:target_length]
+    source_tokens = _tokenize_text(text)
+    if not source_tokens:
+        return text
+
+    if len(source_tokens) >= target_length:
+        return " ".join(source_tokens[:target_length])
+
+    expanded: list[str] = []
+    while len(expanded) < target_length:
+        expanded.extend(source_tokens)
+    return " ".join(expanded[:target_length])
 
 
 def _load_source_text(prompt_file: str, prompt_text: str) -> str:
@@ -284,9 +293,12 @@ def run_model_summarization(
 
     source_text = _resize_text(source_text, prompt_length)
     prompt = f"{summary_instruction.strip()}\n\n{source_text}"
+    source_token_count = len(_tokenize_text(source_text))
+    prompt_token_count = len(_tokenize_text(prompt))
 
     print(f"\nRunning model: id='{model.id}' alias='{model.alias}'")
-    print(f"Prompt source length (chars): {len(source_text)}")
+    print(f"Prompt source length (tokens): {source_token_count}")
+    print(f"Prompt total length (tokens): {prompt_token_count}")
 
     try:
         if not model.is_cached:
